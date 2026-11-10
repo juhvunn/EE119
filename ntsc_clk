@@ -1,0 +1,268 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity NTSC is
+    port (
+        CLK        : in  std_logic;                     -- 10 MHz clock
+        Col        : out std_logic_vector(9 downto 0);  -- ROM column address
+        Row        : out std_logic_vector(7 downto 0);  -- ROM row address
+        OddEven    : out std_logic;                     -- ROM field address
+        VideoBlank : out std_logic;                     -- blank (active low)
+        VideoSync  : out std_logic                      -- sync (active high)
+    );
+end NTSC;
+
+
+architecture behavioral of NTSC is
+
+    -- horizontal timing constants (in clocks)
+    constant LINE_CLKS   : integer := 636;
+    constant HALF_CLKS   : integer := 318;
+    constant HSYNC_CLKS  : integer := 47;
+    constant EQ_CLKS     : integer := 23;
+    constant SER_CLKS    : integer := 273;
+    constant VIDEO_START : integer := 109;
+    constant PIXELS      : integer := 512;
+
+    -- vertical timing constants (in lines)
+    constant LAST_LINE  : integer := 525;
+    constant EVEN_FIRST : integer := 21;
+    constant EVEN_LAST  : integer := 260;
+    constant ODD_FIRST  : integer := 284;
+    constant ODD_LAST   : integer := 523;
+
+    -- the type of sync pulses in each half of a line
+    type HalfType is (NORMAL, EQ, SER);
+
+    -- counters
+    signal HCnt    : integer range 0 to LINE_CLKS - 1 := 0;
+    signal LineCnt : integer range 1 to LAST_LINE := 1;
+
+    -- line decoding
+    signal VideoLine  : std_logic;
+    signal FirstHalf  : HalfType;
+    signal SecondHalf : HalfType;
+
+    -- next value of the registered blank output
+    signal BlankNext : std_logic;
+
+    -- registered outputs
+    signal SyncOut  : std_logic := '1';
+    signal BlankOut : std_logic := '0';
+
+begin
+
+    -- outputs
+    VideoSync  <= SyncOut;
+    VideoBlank <= BlankOut;
+
+
+    -- normal video lines are the only lines that are not blanked
+    VideoLine <= '1'
+        when (LineCnt >= EVEN_FIRST and LineCnt <= EVEN_LAST) or
+             (LineCnt >= ODD_FIRST and LineCnt <= ODD_LAST)
+        else '0';
+
+
+    -- decode the type of sync pulses in each half of the current line
+    -- (the second half of a normal line has no sync pulse)
+    process(LineCnt)
+    begin
+
+        case LineCnt is
+
+            when 1 to 3 | 7 to 9 | 264 to 265 | 270 to 271 =>
+                FirstHalf  <= EQ;
+                SecondHalf <= EQ;
+
+            when 4 to 6 | 267 to 268 =>
+                FirstHalf  <= SER;
+                SecondHalf <= SER;
+
+            when 263 =>
+                FirstHalf  <= NORMAL;
+                SecondHalf <= EQ;
+
+            when 266 =>
+                FirstHalf  <= EQ;
+                SecondHalf <= SER;
+
+            when 269 =>
+                FirstHalf  <= SER;
+                SecondHalf <= EQ;
+
+            when 272 =>
+                FirstHalf  <= EQ;
+                SecondHalf <= NORMAL;
+
+            when others =>
+                -- default is a normal (video or blanked) line
+                FirstHalf  <= NORMAL;
+                SecondHalf <= NORMAL;
+
+        end case;
+
+    end process;
+
+
+    -- generate the sync signal based on the half line type and the position
+    -- in the line, every half line starts with sync (if it has one)
+    process(CLK)
+
+        variable kind         : HalfType;
+        variable position     : integer range 0 to HALF_CLKS - 1;
+        variable pulse_active : boolean;
+
+    begin
+
+        if rising_edge(CLK) then
+
+            case HCnt is
+
+                when 0 to HALF_CLKS - 1 =>
+                    kind := FirstHalf;
+                    position := HCnt;
+
+                when others =>
+                    kind := SecondHalf;
+                    position := HCnt - HALF_CLKS;
+
+            end case;
+
+            case kind is
+
+                when NORMAL =>
+                    -- Normal sync occurs only at the start of a full line.
+                    pulse_active := HCnt < HSYNC_CLKS;
+
+                when EQ =>
+                    pulse_active := position < EQ_CLKS;
+
+                when SER =>
+                    pulse_active := position < SER_CLKS;
+
+            end case;
+
+            case pulse_active is
+
+                when true =>
+                    SyncOut <= '1';
+
+                when false =>
+                    SyncOut <= '0';
+
+            end case;
+
+        end if;
+
+    end process;
+
+
+    -- not blanked only during the video portion of a normal video line
+    BlankNext <= '1'
+        when VideoLine = '1' and
+             HCnt >= VIDEO_START and
+             HCnt < VIDEO_START + PIXELS
+        else '0';
+
+
+    -- ROM address is prepared one clock before the registered video window.
+    process(HCnt, LineCnt, VideoLine)
+    begin
+
+        Col     <= (others => '0');
+        Row     <= (others => '0');
+        OddEven <= '0';
+
+        if LineCnt >= EVEN_FIRST and LineCnt <= EVEN_LAST then
+
+            Row <= std_logic_vector(
+                to_unsigned(LineCnt - EVEN_FIRST, Row'length)
+            );
+
+        elsif LineCnt >= ODD_FIRST and LineCnt <= ODD_LAST then
+
+            OddEven <= '1';
+
+            Row <= std_logic_vector(
+                to_unsigned(LineCnt - ODD_FIRST, Row'length)
+            );
+
+        end if;
+
+        if VideoLine = '1' and
+           HCnt >= VIDEO_START and
+           HCnt < VIDEO_START + PIXELS then
+
+            Col <= std_logic_vector(
+                to_unsigned(HCnt - VIDEO_START, Col'length)
+            );
+
+        end if;
+
+    end process;
+
+
+    -- register the blank timing output
+    process(CLK)
+    begin
+
+        if rising_edge(CLK) then
+            BlankOut <= BlankNext;
+        end if;
+
+    end process;
+
+
+    -- horizontal counter, at the end of the line go to the next line
+    process(CLK)
+    begin
+
+        if rising_edge(CLK) then
+
+            case HCnt is
+
+                when LINE_CLKS - 1 =>
+                    HCnt <= 0;
+
+                when others =>
+                    HCnt <= HCnt + 1;
+
+            end case;
+
+        end if;
+
+    end process;
+
+
+    -- vertical counter advances at the end of each line
+    process(CLK)
+    begin
+
+        if rising_edge(CLK) then
+
+            case HCnt is
+
+                when LINE_CLKS - 1 =>
+
+                    case LineCnt is
+
+                        when LAST_LINE =>
+                            LineCnt <= 1;
+
+                        when others =>
+                            LineCnt <= LineCnt + 1;
+
+                    end case;
+
+                when others =>
+                    LineCnt <= LineCnt;
+
+            end case;
+
+        end if;
+
+    end process;
+
+end behavioral;
