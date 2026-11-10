@@ -1,0 +1,24 @@
+# NTSC pinout
+
+NET "CLK"          LOC = "P5" ;
+NET "Col(0)"       LOC = "P44";
+NET "Col(1)"       LOC = "P43";
+NET "Col(2)"       LOC = "P38";
+NET "Col(3)"       LOC = "P37";
+NET "Col(4)"       LOC = "P36";
+NET "Col(5)"       LOC = "P35";
+NET "Col(6)"       LOC = "P34";
+NET "Col(7)"       LOC = "P33";
+NET "Col(8)"       LOC = "P29";
+NET "Col(9)"       LOC = "P28";
+NET "Row(0)"       LOC = "P12";
+NET "Row(1)"       LOC = "P11";
+NET "Row(2)"       LOC = "P9" ;
+NET "Row(3)"       LOC = "P8" ;
+NET "Row(4)"       LOC = "P4" ;
+NET "Row(5)"       LOC = "P3" ;
+NET "Row(6)"       LOC = "P2" ;
+NET "Row(7)"       LOC = "P1" ;
+NET "OddEven"      LOC = "P13";
+NET "VideoBlank"   LOC = "P22";
+NET "VideoSync"    LOC = "P20";
