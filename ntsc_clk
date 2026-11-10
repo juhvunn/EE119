@@ -16,6 +16,8 @@
 -- Revision 0.01 - File Created
 -- Revision 0.02 - ROM address made registered counters (no subtractors) and
 --                 subtraction removed from sync generation to fit XC9572
+-- Revision 0.03 - Line decoding (FirstHalf, SecondHalf, VideoLine) registered
+--                 and start + width addition removed to reduce product terms
 -- Additional Comments:
 --
 ----------------------------------------------------------------------------------
@@ -62,10 +64,13 @@ architecture behavioral of NTSC is
     signal HCnt    : integer range 0 to LINE_CLKS - 1 := 0;
     signal LineCnt : integer range 1 to LAST_LINE := 1;
 
-    -- line decoding
-    signal VideoLine  : std_logic;
-    signal FirstHalf  : HalfType;
-    signal SecondHalf : HalfType;
+    -- line decoding (registered)
+    -- These lag LineCnt by one clock, so at HCnt = 0 they still hold the
+    -- previous line's values.  This does not matter since every line type
+    -- has sync active and video blanked at HCnt = 0.
+    signal VideoLine  : std_logic := '0';
+    signal FirstHalf  : HalfType  := HALF_NORM;
+    signal SecondHalf : HalfType  := HALF_NORM;
 
     -- next values of the (registered) outputs
     signal BlankNext : std_logic;
@@ -91,67 +96,73 @@ begin
     OddEven <= OddField;
 
 
-    -- normal video lines are the only lines that are not blanked
-    VideoLine <= '1'
-        when (LineCnt >= EVEN_FIRST and LineCnt <= EVEN_LAST) or (LineCnt >= ODD_FIRST and LineCnt <= ODD_LAST)
-        else '0';
-
-
-    -- decode the type of sync pulses in each half of the current line
+    -- decode the type of sync pulses in each half of the current line and
+    -- whether it is a normal video line (registered so the sync logic only
+    -- sees HCnt and the decoded line type, not all of LineCnt)
     -- (the second half of a normal line has no sync pulse)
-    process(LineCnt)
+    process(CLK)
     begin
-        -- default is a normal (video or blanked) line
-        FirstHalf  <= HALF_NORM;
-        SecondHalf <= HALF_NORM;
+        if rising_edge(CLK) then
 
-        case LineCnt is
-            when 1 to 3 | 7 to 9 | 264 to 265 | 270 to 271 =>
-                FirstHalf  <= HALF_EQ;
-                SecondHalf <= HALF_EQ;
+            -- default is a normal (video or blanked) line
+            FirstHalf  <= HALF_NORM;
+            SecondHalf <= HALF_NORM;
 
-            when 4 to 6 | 267 to 268 =>
-                FirstHalf  <= HALF_SER;
-                SecondHalf <= HALF_SER;
+            case LineCnt is
+                when 1 to 3 | 7 to 9 | 264 to 265 | 270 to 271 =>
+                    FirstHalf  <= HALF_EQ;
+                    SecondHalf <= HALF_EQ;
 
-            when 263 =>
-                SecondHalf <= HALF_EQ;
+                when 4 to 6 | 267 to 268 =>
+                    FirstHalf  <= HALF_SER;
+                    SecondHalf <= HALF_SER;
 
-            when 266 =>
-                FirstHalf  <= HALF_EQ;
-                SecondHalf <= HALF_SER;
+                when 263 =>
+                    SecondHalf <= HALF_EQ;
 
-            when 269 =>
-                FirstHalf  <= HALF_SER;
-                SecondHalf <= HALF_EQ;
+                when 266 =>
+                    FirstHalf  <= HALF_EQ;
+                    SecondHalf <= HALF_SER;
 
-            when 272 =>
-                FirstHalf <= HALF_EQ;
+                when 269 =>
+                    FirstHalf  <= HALF_SER;
+                    SecondHalf <= HALF_EQ;
 
-            when others =>
-                FirstHalf  <= HALF_NORM;
-                SecondHalf <= HALF_NORM;
+                when 272 =>
+                    FirstHalf <= HALF_EQ;
 
-        end case;
+                when others =>
+                    FirstHalf  <= HALF_NORM;
+                    SecondHalf <= HALF_NORM;
+
+            end case;
+
+            -- normal video lines are the only lines that are not blanked
+            if (LineCnt >= EVEN_FIRST and LineCnt <= EVEN_LAST) or
+               (LineCnt >= ODD_FIRST and LineCnt <= ODD_LAST) then
+                VideoLine <= '1';
+            else
+                VideoLine <= '0';
+            end if;
+
+        end if;
     end process;
 
 
     -- generate the sync signal based on the half line type and the position
     -- in the line, every half line starts with sync (if it has one)
-    -- (compares against start + width so no subtractor is needed)
+    -- (each pulse type checks both halves with constant compares, kind
+    -- already restricts it to the correct half, so no adder is needed)
     process(CLK)
 
-        variable kind  : HalfType;
-        variable start : integer range 0 to HALF_CLKS;
+        variable kind : HalfType;
 
     begin
         if rising_edge(CLK) then
             if HCnt < HALF_CLKS then
-                kind  := FirstHalf;
-                start := 0;
+                kind := FirstHalf;
             else
-                kind  := SecondHalf;
-                start := HALF_CLKS;
+                kind := SecondHalf;
             end if;
 
             SyncOut <= '0';
@@ -165,12 +176,14 @@ begin
                     end if;
 
                 when HALF_EQ =>
-                    if HCnt < start + EQ_CLKS then
+                    if (HCnt < EQ_CLKS) or
+                       (HCnt >= HALF_CLKS and HCnt < HALF_CLKS + EQ_CLKS) then
                         SyncOut <= '1';
                     end if;
 
                 when HALF_SER =>
-                    if HCnt < start + SER_CLKS then
+                    if (HCnt < SER_CLKS) or
+                       (HCnt >= HALF_CLKS and HCnt < HALF_CLKS + SER_CLKS) then
                         SyncOut <= '1';
                     end if;
 
